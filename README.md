@@ -1,6 +1,4 @@
-# Microbiota_Larvae
-
-# PIPELINE MICROBIOTA ANALYSIS
+# PIPELINE MICROBIOTA LARVAE ANALYSIS
 Bioinformatic pipeline to analyze microbiota from Arbacia lixula and Paracentrotus lividus using different body compartments.
 
 ## connect to VENUS
