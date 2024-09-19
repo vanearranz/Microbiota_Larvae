@@ -1,1 +1,216 @@
 # Microbiota_Larvae
+
+# PIPELINE MICROBIOTA ANALYSIS
+Bioinformatic pipeline to analyze microbiota from Arbacia lixula and Paracentrotus lividus using different body compartments.
+
+## connect to VENUS
+ssh intern@161.116.67.159
+
+### BUILD ENVIRONMENT AND INSTALL ###
+```
+module load anaconda3/2020.11
+
+wget https://data.qiime2.org/distro/core/qiime2-2022.11-py38-linux-conda.yml
+conda env create -n qiime2-2022.11 --file qiime2-2022.11-py38-linux-conda.yml
+rm qiime2-2022.11-py38-linux-conda.yml
+
+conda activate qiime2-2022.11
+```
+
+
+### STEP 1: IMPORT RAW FILES INTO QIIME2 ###
+```
+qiime tools import \
+  --type 'SampleData[PairedEndSequencesWithQuality]' \
+  --input-path Microbiota_adults/ \
+  --input-format CasavaOneEightSingleLanePerSampleDirFmt \
+  --output-path demux-seqs.qza
+```
+
+
+### STEP 2: TRIM PRIMERS OFF RAW READS #
+```
+qiime cutadapt trim-paired \
+  --i-demultiplexed-sequences demux-seqs.qza
+  --p-front-f CCTACGGGNGGCWGCAG \
+  --p-front-r GACTACHVGGGTATCTAATCC \
+  --p-error-rate 0 \
+  --o-trimmed-sequences trimmed-seqs.qza
+```
+
+### STEP 3: JOIN/MERGE PAIRED-ENDS ###
+```
+qiime vsearch join-pairs \
+  --i-demultiplexed-seqs trimmed-seqs.qza\
+  --o-joined-sequences joined-seqs.qza\
+  --p-minovlen 20 \
+  --p-maxdiffs 10 \
+  --p-minmergelen 350 \
+  --p-maxmergelen 550 \
+  --p-allowmergestagger \
+  --p-truncqual 10 \
+  --p-minlen 100 \
+  --p-qmax 41 \
+  --p-qmaxout 41
+```
+
+
+### STEP 4: QUALITY CONTROL PAIRED-END READS ###
+```
+qiime quality-filter q-score-joined \
+  --i-demux joined-seq.qza\
+  --o-filtered-sequences filtered-joined-seqs.qza \
+  --o-filter-stats filtered-joined-stats.qza \
+  --p-quality-window 5 \
+  --p-min-quality 25 
+```
+
+
+### STEP 5: REIMPORT FILTERED FILES WITH MODIFIED NAMES ###
+```
+#NOTE: THIS IS OPTIONAL
+qiime tools export \
+  --input-path filtered-joined-seqs.qza
+  --output-path Microbiota_adults/
+
+qiime tools import \
+  --type 'SampleData[SequencesWithQuality]' \
+  --input-path Microbiota_adults/ \
+  --output-path filtered-joined-seqs2.qza \
+  --input-format SingleEndFastqManifestPhred33
+```
+
+
+### STEP 6: DENOISE AND CLUSTERING INTO ASV ###
+```
+qiime dada2 denoise-paired \
+  --i-demultiplexed-seqs trimmed-seqs.qza \
+  --p-trim-left-f 0 \
+  --p-trim-left-r 0 \
+  --p-trunc-len-f 260 \
+  --p-trunc-len-r 260 \
+  --p-n-threads 4
+  --o-representative-sequences rep-seqs-dada2.qza \
+  --o-table table-dada2.qza \
+  --o-denoising-stats denoising-stats-dada2.qza
+```
+####  VISUALIZATION AND SUMMARY	
+```
+qiime feature-table summarize \
+--i-table table-dada2.qza \
+--o-visualization table-dada2.qzv 
+
+qiime feature-table tabulate-seqs \
+--i-data rep-seqs-dada2.qza \
+--o-visualization rep-seqs-dada2.qzv
+```
+#### CREATE FEATURE TABLE WITH METADATA 
+```
+qiime feature-table summarize \
+  --i-table table-dada2.qza \
+  --o-visualization table-dada2-summary.qzv \
+  --m-sample-metadata-file METADATA_microbiota.tsv
+```
+### STEP 7: CREATE PHYLOGENY ###
+```
+#ALIGNMENT OF REPRESENTATIVE SEQUENCES
+qiime alignment mafft \
+  --i-sequences rep-seqs-deblur.qza \
+  --o-alignment alignment-rep-seqs.qza \
+
+#MASK HIGHLY VARIABLE NOISY POSITIONS IN ALIGNMENT
+qiime alignment mask \
+  --i-alignment alignment-rep-seqs.qza \
+  --o-masked-alignment masked-alignment-rep-seqs.qza \
+
+#CREATE PHYLOGENY WITH FASTTREE
+qiime phylogeny fasttree \
+  --i-alignment alignment-rep-seqs.qza \
+  --o-tree fasttree-alignment-rep-seqs.qza \
+
+#ROOT PHYLOGENY AT MIDPOINT
+qiime phylogeny midpoint-root \
+  --i-tree fasttree-alignment-rep-seqs.qza \
+  --o-rooted-tree rooted-tree-rep-seqs.qza \
+```
+
+### STEP 8: ASSIGN TAXONOMY WITH TRAINED CLASSIFIER ###
+```
+wget \
+-O "silva-138-99-nb-classifier.qza" \
+"https://data.qiime2.org/2022.11/common/silva-138-99-nb-classifier.qza"
+
+qiime feature-classifier classify-sklearn \
+  --i-classifier silva-138-99-nb-classifier.qza \
+  --i-reads rep-seqs-dada2.qza \
+  --o-classification taxonomy.qza \
+  --p-n-jobs 1
+  --p-confidence 0.7 \
+  --p-read-orientation same \
+```
+
+
+### STEP 9: FILTER ARCHAEA, CHLOROPLAST, SINGLETONS ###
+```
+qiime taxa filter-table \
+  --i-table table-dada2.qza \
+  --i-taxonomy taxonomy.qza \
+  --p-exclude Archaea \
+  --p-mode contains \
+  --o-filtered-table table-ddada2-noAr.qza 
+
+qiime taxa filter-table \
+  --i-table table-clean.qza \
+  --i-taxonomy taxonomy.qza \
+  --p-exclude Eukaryota \
+  --p-mode contains \
+  --o-filtered-table table-dada2-clean.qza 
+
+qiime feature-table filter-features \
+  --i-table table-dada2-clean.qza \
+  --p-min-frequency 2 \
+  --o-filtered-table table-clean.qza 
+```
+
+### STEP 11: RAREIFY TABLE ###
+```
+qiime diversity alpha-rarefaction \
+  --i-table table-dada2.qza \
+  --i-phylogeny rooted-tree.qza \
+  --p-max-depth 7000 \
+  --m-metadata-file metadata_microbiota.tsv \
+  --o-visualization alpha-rarefaction.qzv
+```
+
+### STEP 12: CREATE TAXA BARPLOT ### 
+```
+qiime taxa barplot \
+  --i-table table-clean.qza \
+  --i-taxonomy taxonomy.qza \
+  --m-metadata-file METADATA_microbiota.tsv \
+  --o-visualization taxa-bar-plots.qzv
+``` 
+
+### STEP 13: DIVERSITY ANALYSIS ###
+```
+qiime diversity core-metrics-phylogenetic \
+  --i-phylogeny rooted-tree.qza \
+  --i-table ARB-table.qza \
+  --p-sampling-depth 1103 \
+  --m-metadata-file metadata_microbiota.tsv \
+  --output-dir core-metrics-results
+```
+ #### ALPHA DIVERSITY ####
+```
+qiime diversity alpha-group-significance \
+  --i-alpha-diversity core-metrics-results/faith_pd_vector.qza \
+  --m-metadata-file metadata_microbiota.tsv \
+  --o-visualization core-metrics-results/faith-pd-group-significanceboth.qzv
+```
+  #### BETA DIVERSITY ####
+```  
+qiime emperor plot \
+  --i-pcoa core-metrics-results/bray_curtis_pcoa_results.qza \
+  --m-metadata-file METADATA_microbiota.tsv \
+  --o-visualization core-metrics-results/bray_curtis_pcoa_results.qzv
+```
